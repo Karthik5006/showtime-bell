@@ -2,3 +2,5 @@
 !watcher.py
 !sources.py
 !test_watch.py
+!state_sync.py
+!test_actions.py

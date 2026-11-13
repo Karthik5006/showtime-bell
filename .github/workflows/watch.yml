@@ -30,7 +30,7 @@ jobs:
     runs-on: ${{ vars.WATCH_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
-      STATE_DIR: ${{ runner.temp }}/showtime-state
+      STATE_DIR: ${{ github.workspace }}/data
       BROWSER_HEADLESS: 'false'
       PYTHONUNBUFFERED: '1'
     steps:
