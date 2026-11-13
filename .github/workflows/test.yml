@@ -24,6 +24,40 @@ jobs:
         run: docker build -t showtime-bell .
       - name: Replay booking changes
         run: docker run --rm --entrypoint python showtime-bell -m unittest -v
+
+  live-inspection:
+    name: Live booking access
+    needs: test
+    if: (github.event_name == 'workflow_dispatch' && inputs.live) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live trial]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the watcher
+        run: docker build -t showtime-bell .
       - name: Live inspection
-        if: (github.event_name == 'workflow_dispatch' && inputs.live) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live trial]'))
-        run: docker run --rm --shm-size=512m showtime-bell inspect
+        shell: bash
+        run: |
+          set -o pipefail
+          docker run --rm --shm-size=512m showtime-bell inspect | tee "$RUNNER_TEMP/cinema-inspection.log"
+      - name: Summarize live coverage
+        if: always()
+        shell: bash
+        run: |
+          report="$RUNNER_TEMP/cinema-inspection.log"
+          {
+            echo '### Live booking access'
+            if [[ -f "$report" ]]; then
+              echo 'Venue checks appear below. Unknown means this runner could not verify availability.'
+              echo '~~~text'
+              grep -E 'enabled shows|unknown|directory unavailable|directory matched|Stopped:' "$report" || true
+              echo '~~~'
+              if grep -q 'HTTP 403' "$report"; then
+                echo 'The booking service denied a request from this runner. Check live access on the intended deployment host before enabling alerts.'
+              fi
+            else
+              echo 'Live inspection did not start.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
