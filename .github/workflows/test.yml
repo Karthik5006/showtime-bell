@@ -1,0 +1,29 @@
+name: Test Showtime Bell
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      live:
+        description: Check live booking pages
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the watcher
+        run: docker build -t showtime-bell .
+      - name: Replay booking changes
+        run: docker run --rm --entrypoint python showtime-bell -m unittest -v
+      - name: Live inspection
+        if: (github.event_name == 'workflow_dispatch' && inputs.live) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live trial]'))
+        run: docker run --rm --shm-size=512m showtime-bell inspect

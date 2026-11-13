@@ -1,0 +1,11 @@
+services:
+  watcher:
+    build: .
+    init: true
+    restart: unless-stopped
+    shm_size: 512mb
+    env_file: .env
+    volumes:
+      - cinema-state:/app/data
+volumes:
+  cinema-state:
