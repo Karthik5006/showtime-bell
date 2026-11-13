@@ -4,7 +4,7 @@ Movie ticket alerts for your favorite cinemas. Showtime Bell currently watches A
 
 ## Try it on GitHub from your phone
 
-The included GitHub Actions workflow runs the offline trials on every push and pull request. For a live trial, open **Actions → Test Showtime Bell → Run workflow**, select **Check live booking pages**, then open the **Live inspection** step to see which shows the runner could verify. It uses read-only repository permissions and requires no Telegram credentials. If a booking site blocks GitHub's runner, the job reports an incomplete check.
+The included GitHub Actions workflow runs the offline trials on every push and pull request. For a live trial, open **Actions → Test Showtime Bell → Run workflow**, select **Check live booking pages**, then open the **Live inspection** step to see which shows the runner could verify. Maintainers can also request a one-off live trial by including `[live trial]` in the push commit message. It uses read-only repository permissions and requires no Telegram credentials. If a booking site blocks GitHub's runner, the job reports an incomplete check.
 
 ## Run the alert service
 
@@ -14,7 +14,7 @@ Run this Python worker on an always-on Linux machine or VPS with Docker Compose.
 
 ## Try it before entering any credentials
 
-Extract the ZIP and run these commands in the extracted folder.
+Clone this repository or extract its source ZIP. Open the project folder and run the commands below.
 
 ```sh
 cp .env.example .env
