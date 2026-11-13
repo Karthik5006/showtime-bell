@@ -1,0 +1,115 @@
+name: Showtime alerts
+on:
+  schedule:
+    - cron: '3-58/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: Send a Telegram delivery test before scanning
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/watch.yml'
+      - 'watcher.py'
+      - 'sources.py'
+      - 'state_sync.py'
+
+permissions:
+  contents: write
+
+# A shared history must have exactly one writer, even for manual runs.
+concurrency:
+  group: showtime-alerts
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.WATCH_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    env:
+      STATE_DIR: ${{ runner.temp }}/showtime-state
+      BROWSER_HEADLESS: 'false'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser
+        run: |
+          python -m pip install playwright==1.62.0
+          python -m playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb xauth
+      - name: Offline regression tests
+        run: python -m unittest -v
+      - name: Check notification settings
+        id: settings
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: bash
+        run: |
+          if [[ -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in repository Actions secrets. Running a read-only inspection meanwhile.'
+          fi
+      - name: Restore alert history
+        id: restore
+        if: steps.settings.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python state_sync.py restore
+      - name: Telegram delivery test
+        if: steps.settings.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.test_alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python watcher.py test-alert
+      - name: Check booking pages
+        id: scan
+        env:
+          READY: ${{ steps.settings.outputs.ready }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BROWSER_PROXY_SERVER: ${{ secrets.BROWSER_PROXY_SERVER }}
+          BROWSER_PROXY_USERNAME: ${{ secrets.BROWSER_PROXY_USERNAME }}
+          BROWSER_PROXY_PASSWORD: ${{ secrets.BROWSER_PROXY_PASSWORD }}
+        shell: bash
+        run: |
+          mode=inspect
+          if [[ "$READY" == true ]]; then mode=once; fi
+          set -o pipefail
+          xvfb-run -a python watcher.py "$mode" 2>&1 | tee "$RUNNER_TEMP/showtime-scan.log"
+      - name: Save alert history even after incomplete coverage
+        if: always() && steps.restore.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python state_sync.py save
+      - name: Coverage summary
+        if: always()
+        env:
+          READY: ${{ steps.settings.outputs.ready }}
+        shell: bash
+        run: |
+          {
+            echo '### Showtime Bell'
+            if [[ "$READY" != true ]]; then
+              echo 'Telegram is not configured. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Actions secrets.'
+            fi
+            echo '```text'
+            if [[ -f "$RUNNER_TEMP/showtime-scan.log" ]]; then
+              grep -E 'enabled shows|unknown|directory unavailable|directory matched|Stopped:' "$RUNNER_TEMP/showtime-scan.log" || true
+            else
+              echo 'The scan did not start; inspect the failed setup step.'
+            fi
+            echo '```'
+            echo 'Unknown or HTTP 403 means unverified coverage, not sold out. If this connection remains blocked, configure an authorized proxy or a self-hosted runner on a working connection; see README.'
+          } >> "$GITHUB_STEP_SUMMARY"

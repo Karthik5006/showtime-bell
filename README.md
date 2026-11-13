@@ -2,9 +2,30 @@
 
 Movie ticket alerts for your favorite cinemas. Showtime Bell currently watches ALLU Cinemas in Kokapet and Prasads Multiplex in Hyderabad, including PCX. When a booking opens on BookMyShow or District, the watcher sends the showtime and booking link to Telegram.
 
-## Try it on GitHub from your phone
+## GitHub Actions notifications
 
-The included GitHub Actions workflow runs the offline trials on every push and pull request. For a live trial, open **Actions → Test Showtime Bell → Run workflow**, select **Check live booking pages**, then open the **Live inspection** step to see which shows the runner could verify. Maintainers can also request a one-off live trial by including `[live trial]` in the push commit message. It uses read-only repository permissions and requires no Telegram credentials. If a booking site blocks GitHub's runner, the job reports an incomplete check.
+**Actions → Showtime alerts** checks on a five-minute cron schedule and when watcher code changes on `main`. GitHub may delay or drop scheduled jobs; this is not a precise five-minute timer. The workflow runs a full Chromium session under Xvfb. It performs one scan and exits, instead of running an endless worker in Actions.
+
+1. In **Settings → Secrets and variables → Actions → Secrets**, add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. See “Connect your phone” below for obtaining them. Never put these in source code or issues.
+2. Open **Actions → Showtime alerts → Run workflow** on `main`. Leave the delivery-test checkbox enabled. Confirm the clearly labeled test arrives in Telegram.
+3. Read the **Coverage summary**. A successful initial scan records existing shows silently; later newly enabled shows trigger messages. Three consecutive incomplete scans send a coverage warning. A delivery test confirms Telegram only, not booking-site access.
+
+Without the two secrets, the workflow runs read-only inspection and reports that notifications are not configured. The workflow saves the SQLite show inventory to a separate `showtime-state` branch, including after incomplete scans. That database contains public show listings and delivery/health status, never credentials. Do not delete the branch unless you intend to reset the baseline. State API failures stop the scan rather than silently losing history. Concurrent runs share one writer. A crash after delivery but before saving state can still produce a repeated alert.
+
+### If a booking site returns 403
+
+A 403 is denied access, not an empty cinema. The earlier GitHub live trial returned 403 for both BookMyShow and District. Full browser mode may help browser compatibility but does not guarantee acceptance of GitHub's data-center connection. The watcher stops additional requests to a denied platform for that scan, retains prior inventory, and reports incomplete coverage.
+
+If the full-browser trial is still blocked, provide a connection on which you are authorized to access the public listings:
+
+- Add optional Actions secrets `BROWSER_PROXY_SERVER` (for example `http://proxy-host:port`), `BROWSER_PROXY_USERNAME`, and `BROWSER_PROXY_PASSWORD` for a proxy you control or are authorized to use. No proxy is bundled or purchased.
+- Alternatively register a dedicated Linux self-hosted GitHub runner with a custom label, then set repository variable `WATCH_RUNNER` to that label. It needs Python, sudo/apt, and a working connection to the booking sites. The same scheduled workflow will use it. Do not enable untrusted pull-request jobs on that runner.
+
+The code does not solve CAPTCHAs or infer availability from challenge pages. Use the coverage summary to verify the chosen connection actually works. GitHub can disable schedules on inactive public repositories after 60 days; check Actions if alerts stop.
+
+## Offline and live tests
+
+**Test Showtime Bell** runs the offline trials on pushes to `main` and pull requests. Its optional **Check live booking pages** input retains the original Docker-based headless inspection for comparison. **Showtime alerts** uses the new full-browser path and runs the offline regression tests before scanning.
 
 ## Run the alert service
 

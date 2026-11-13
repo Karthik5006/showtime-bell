@@ -1,6 +1,7 @@
 name: Test Showtime Bell
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:

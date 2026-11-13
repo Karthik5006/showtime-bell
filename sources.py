@@ -27,8 +27,14 @@ def public_url(base, href):
     return url
 
 
+class AccessDenied(RuntimeError):
+    """The service denied this session; stop requests to it for this scan."""
+
+
 def visit(page, url):
     response = page.goto(url, wait_until="domcontentloaded", timeout=35000)
+    if response is not None and response.status in (401, 403, 429):
+        raise AccessDenied(f"Page unavailable (HTTP {response.status}); this scan stops requests to this platform")
     if response is None or response.status >= 400:
         raise RuntimeError(f"Page unavailable (HTTP {response.status if response else 'unknown'})")
     public_url(url, page.url)

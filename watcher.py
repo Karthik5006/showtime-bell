@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 from playwright.sync_api import sync_playwright
 
-from sources import IST, VENUES, bms_calendar, bms_rows, district_calendar, district_directory, district_rows
+from sources import AccessDenied, IST, VENUES, bms_calendar, bms_rows, district_calendar, district_directory, district_rows
 
 
 def log(message):
@@ -153,6 +153,7 @@ def cycle(browser,db,inspect=False):
     page = browser.new_page(timezone_id="Asia/Kolkata",locale="en-IN")
     page.set_default_timeout(12000)
     failures = 0
+    denied = {}
     try:
         try:
             district = district_directory(page)
@@ -165,6 +166,8 @@ def cycle(browser,db,inspect=False):
                 scope = platform+"/"+venue
                 errors = False
                 try:
+                    if platform in denied:
+                        raise AccessDenied(denied[platform])
                     if platform == "District":
                         if district is None:
                             raise ValueError("Directory check failed")
@@ -196,8 +199,13 @@ def cycle(browser,db,inspect=False):
                         except Exception as e:
                             errors = True
                             log(f"{scope} {day}: unknown — "+str(e).splitlines()[0])
+                            if isinstance(e, AccessDenied):
+                                denied[platform] = str(e)
+                                break
                 except Exception as e:
                     errors = True
+                    if isinstance(e, AccessDenied):
+                        denied[platform] = str(e)
                     log(f"{scope}: unknown — "+str(e).splitlines()[0])
                 failures += int(errors)
                 health(db,scope,errors,not inspect)
@@ -213,9 +221,24 @@ def cycle(browser,db,inspect=False):
     return failures
 
 
+def browser_options():
+    options = {"headless": os.getenv("BROWSER_HEADLESS", "true").lower() != "false"}
+    if os.getenv("CHROMIUM_PATH"):
+        options["executable_path"] = os.environ["CHROMIUM_PATH"]
+    else:
+        # Use the full Chromium browser, including in headless mode.
+        options["channel"] = "chromium"
+    if os.getenv("BROWSER_PROXY_SERVER"):
+        options["proxy"] = {"server": os.environ["BROWSER_PROXY_SERVER"]}
+        for field in ("username", "password"):
+            if os.getenv("BROWSER_PROXY_" + field.upper()):
+                options["proxy"][field] = os.environ["BROWSER_PROXY_" + field.upper()]
+    return options
+
+
 def main():
     parser = argparse.ArgumentParser(description="Showtime Bell — Hyderabad cinema ticket alerts")
-    parser.add_argument("command",choices=["watch","inspect","test-alert","chat-id"])
+    parser.add_argument("command",choices=["watch","once","inspect","test-alert","chat-id"])
     mode = parser.parse_args().command
     if mode=="test-alert":
         send("Showtime Bell delivery test — Hyderabad cinema alerts are connected. This message contains no ticket opening.")
@@ -241,16 +264,21 @@ def main():
         lock = (path/"watch.lock").open("a")
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     db = database(":memory:" if inspect else path/"watch.sqlite3")
-    with sync_playwright() as pw:
-        while True:
-            browser = pw.chromium.launch(executable_path=os.getenv("CHROMIUM_PATH") or None)
-            try:
-                errors = cycle(browser,db,inspect)
-            finally:
-                browser.close()
-            if inspect:
-                return int(bool(errors))
-            time.sleep(interval)
+    try:
+        with sync_playwright() as pw:
+            while True:
+                browser = pw.chromium.launch(**browser_options())
+                try:
+                    errors = cycle(browser,db,inspect)
+                finally:
+                    browser.close()
+                if inspect or mode == "once":
+                    return int(bool(errors))
+                time.sleep(interval)
+    finally:
+        db.close()
+        if not inspect:
+            lock.close()
 
 
 if __name__=="__main__":
