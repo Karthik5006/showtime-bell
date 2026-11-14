@@ -234,6 +234,37 @@ def cycle(browser,db,inspect=False):
     return failures
 
 
+def state_path(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "watch.sqlite3"
+    legacy = directory / "showtime.db"
+    if not target.exists() and legacy.exists():
+        # Copy the existing history, including any committed WAL transactions.
+        with sqlite3.connect(legacy) as old, sqlite3.connect(target) as new:
+            old.backup(new)
+    return target
+
+
+def browser_options():
+    options = {
+        "headless": os.environ.get("BROWSER_HEADLESS", "true").lower() != "false",
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ],
+    }
+    executable = os.environ.get("CHROMIUM_PATH", "").strip()
+    if executable:
+        options["executable_path"] = executable
+    else:
+        options["channel"] = "chromium"
+    proxy_server = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    if proxy_server:
+        options["proxy"] = {"server": proxy_server}
+    return options
+
+
 def main():
     parser = argparse.ArgumentParser(description="Showtime Bell — Hyderabad cinema ticket alerts")
     parser.add_argument("command",choices=["watch","inspect","once","test-alert","chat-id"])
@@ -251,31 +282,20 @@ def main():
         return
     inspect = mode=="inspect"
     state_dir = Path(os.environ.get("STATE_DIR", "/data" if os.path.exists("/data") else "."))
-    state_dir.mkdir(parents=True, exist_ok=True)
-    db_path = state_dir / "showtime.db"
+    db_path = state_path(state_dir)
     db = database(db_path)
 
-    proxy_server = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
-    launch_kwargs = {
-        "headless": True,
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
-    }
-    if proxy_server:
-        launch_kwargs["proxy"] = {"server": proxy_server}
+    launch_kwargs = browser_options()
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(**launch_kwargs)
         try:
             if inspect:
                 failures = cycle(browser,db,inspect=True)
-                sys.exit(1 if failures else 0)
+                return 1 if failures else 0
             if mode=="once":
                 failures = cycle(browser,db,inspect=False)
-                sys.exit(1 if failures else 0)
+                return 1 if failures else 0
             log("Showtime Bell started. Press Ctrl+C to stop.")
             while True:
                 start = time.time()
@@ -284,7 +304,8 @@ def main():
                 time.sleep(max(1.0, 180.0 - elapsed))
         finally:
             browser.close()
+            db.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -59,12 +59,36 @@ class ActionsTests(unittest.TestCase):
             state_sync.check(Path(tmp) / 'watch.sqlite3')
 
     def test_normal_browser_and_optional_proxy(self):
-        with patch.dict(os.environ, {'BROWSER_HEADLESS':'false', 'BROWSER_PROXY_SERVER':'http://localhost:8080', 'BROWSER_PROXY_USERNAME':'user', 'BROWSER_PROXY_PASSWORD':'password'}, clear=True):
+        with patch.dict(os.environ, {'BROWSER_HEADLESS':'false', 'HTTPS_PROXY':'http://localhost:8080'}, clear=True):
             options = watcher.browser_options()
             self.assertFalse(options['headless'])
             self.assertEqual(options['channel'], 'chromium')
-            self.assertEqual(options['proxy']['username'], 'user')
+            self.assertEqual(options['proxy']['server'], 'http://localhost:8080')
+
+    def test_container_browser_path(self):
+        with patch.dict(os.environ, {'CHROMIUM_PATH': '/usr/bin/chromium'}, clear=True):
+            options = watcher.browser_options()
+            self.assertEqual(options['executable_path'], '/usr/bin/chromium')
+            self.assertNotIn('channel', options)
+
+    def test_legacy_history_migrates_without_losing_events(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = watcher.database(root / 'showtime.db')
+            old.execute("INSERT INTO health VALUES ('BookMyShow/ALUC', 2)")
+            old.commit()
+            old.close()
+            target = watcher.state_path(root)
+            self.assertEqual(target.name, state_sync.FILE)
+            state_sync.check(target)
+            with watcher.database(target) as db:
+                self.assertEqual(db.execute('SELECT failures FROM health').fetchone(), (2,))
+                db.execute('UPDATE health SET failures=3')
+            watcher.state_path(root)
+            with watcher.database(target) as db:
+                self.assertEqual(db.execute('SELECT failures FROM health').fetchone(), (3,))
 
 
 if __name__ == '__main__':
     unittest.main()
+

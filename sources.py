@@ -21,6 +21,10 @@ DAY = re.compile(r'button "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*(\d{1,2})\s*([A-Za-
 CLOCK = r"\d{1,2}:\d{2} [AP]M"
 
 
+class AccessDenied(RuntimeError):
+    """A listing could not be verified because access was denied."""
+
+
 def public_url(base, href):
     url = urljoin(base, href)
     if urlsplit(url).netloc != urlsplit(base).netloc or urlsplit(url).scheme != "https":
@@ -75,7 +79,8 @@ def visit(page, url):
                 page.goto("about:blank")
                 page.set_content(html, wait_until="domcontentloaded")
                 return
-        raise RuntimeError(f"Page unavailable (HTTP {status if response else 'unknown'})")
+        error = AccessDenied if status in (401, 403, 429) else RuntimeError
+        raise error(f"Page unavailable (HTTP {status if response else 'unknown'})")
 
     public_url(url, page.url)
 
@@ -126,7 +131,7 @@ def parse_rows(snapshot, platform, venue, day, url):
                 lang = val
         if platform == "BookMyShow" and val.startswith(","):
             fmt = val.lstrip(", ")
-        pattern = r"^button 'Book ("+CLOCK+r")'" if platform == "BookMyShow" else r"^button '("+CLOCK+r")([^']*)'"
+        pattern = r"""^button ["']Book ("""+CLOCK+r""")["']""" if platform == "BookMyShow" else r"""^button ["']("""+CLOCK+r""")([^"']*)["']"""
         match = re.match(pattern, entry)
         if not match:
             continue
