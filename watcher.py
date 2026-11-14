@@ -248,20 +248,26 @@ def state_path(directory):
 def browser_options():
     options = {
         "headless": os.environ.get("BROWSER_HEADLESS", "true").lower() != "false",
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
     }
     executable = os.environ.get("CHROMIUM_PATH", "").strip()
     if executable:
         options["executable_path"] = executable
     else:
         options["channel"] = "chromium"
-    proxy_server = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    proxy_server = (
+        os.environ.get("BROWSER_PROXY_SERVER", "").strip()
+        or os.environ.get("HTTPS_PROXY", "").strip()
+        or os.environ.get("HTTP_PROXY", "").strip()
+    )
     if proxy_server:
-        options["proxy"] = {"server": proxy_server}
+        proxy = {"server": proxy_server}
+        username = os.environ.get("BROWSER_PROXY_USERNAME", "").strip()
+        password = os.environ.get("BROWSER_PROXY_PASSWORD", "").strip()
+        if username:
+            proxy["username"] = username
+        if password:
+            proxy["password"] = password
+        options["proxy"] = proxy
     return options
 
 
@@ -272,20 +278,29 @@ def main():
     if mode=="test-alert":
         send("Showtime Bell delivery test — Hyderabad cinema alerts are connected. This message contains no ticket opening.")
         print("Telegram accepted your test. Check your phone.")
-        return
+        return 0
     if mode=="chat-id":
         updates = telegram("getUpdates",{"limit":100})
         for chat in sorted({u["message"]["chat"]["id"] for u in updates if u.get("message",{}).get("chat",{}).get("type")=="private"}):
             print(chat)
         if not updates:
             print("Open your bot in Telegram, send /start, then retry.")
-        return
+        return 0
     inspect = mode=="inspect"
     state_dir = Path(os.environ.get("STATE_DIR", "/data" if os.path.exists("/data") else "."))
     db_path = state_path(state_dir)
     db = database(db_path)
 
     launch_kwargs = browser_options()
+    launch_kwargs.setdefault(
+        "args",
+        [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ],
+    )
+    poll_seconds = float(os.environ.get("POLL_SECONDS", "180") or "180")
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(**launch_kwargs)
@@ -301,7 +316,7 @@ def main():
                 start = time.time()
                 cycle(browser,db)
                 elapsed = time.time() - start
-                time.sleep(max(1.0, 180.0 - elapsed))
+                time.sleep(max(1.0, poll_seconds - elapsed))
         finally:
             browser.close()
             db.close()
