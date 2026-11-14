@@ -1,20 +1,11 @@
 name: Showtime alerts
 on:
-  schedule:
-    - cron: '3-58/5 * * * *'
   workflow_dispatch:
     inputs:
       test_alert:
         description: Send a Telegram delivery test before scanning
         type: boolean
         default: true
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/watch.yml'
-      - 'watcher.py'
-      - 'sources.py'
-      - 'state_sync.py'
 
 permissions:
   contents: write
