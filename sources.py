@@ -16,7 +16,7 @@ VENUES = {
              r"\bprasad['’]?s?\s+(multiplex|cinemas?|imax|pcx)\b",
              r"ntr (marg|gardens)|khair[at]*bad|imax road|necklace road"),
 }
-DAY = re.compile(r'button "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\d{1,2} [A-Za-z]{3})"(.*)')
+DAY = re.compile(r'button "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*(\d{1,2})\s*([A-Za-z]{3})"(.*)')
 CLOCK = r"\d{1,2}:\d{2} [AP]M"
 
 
@@ -122,10 +122,11 @@ def parse_rows(snapshot, platform, venue, day, url):
 def bms_calendar(page, venue, today):
     base = f"{BMS}/cinemas/hyderabad/{VENUES[venue][1]}/buytickets/{venue}/"
     visit(page, base + today.strftime("%Y%m%d"))
-    page.get_by_role("button", name= re.compile(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d")).first.wait_for()
+    page.get_by_role("button", name= re.compile(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*\d")).first.wait_for()
     snap = page.get_by_role("main").aria_snapshot()
     dates = {}
-    for val, state in DAY.findall(snap):
+    for day_num, month_abbr, state in DAY.findall(snap):
+        val = f"{day_num} {month_abbr}"
         for year in [today.year, today.year + 1]:
             try:
                 day = datetime.strptime(f"{val} {year}", "%d %b %Y").date()
@@ -143,7 +144,7 @@ def bms_rows(page, venue, day, url):
     if page.url != url:
         visit(page, url)
     selected = day.strftime("%a %d %b").replace(" 0", " ")
-    pressed = page.get_by_role("button", name=re.compile(r"^"+selected.replace(" ", r"\s+0?",1)+"$",re.I), pressed=True)
+    pressed = page.get_by_role("button", name=re.compile(r"^"+selected.replace(" ", r"\s*0?",1).replace(" ", r"\s*")+"$",re.I), pressed=True)
     pressed.first.wait_for(timeout=10000)
     grid = page.get_by_role("grid").first
     grid.wait_for()
