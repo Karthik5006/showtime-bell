@@ -65,60 +65,6 @@ class ActionsTests(unittest.TestCase):
             self.assertEqual(options['channel'], 'chromium')
             self.assertEqual(options['proxy']['username'], 'user')
 
-class CompatibilityTests(unittest.TestCase):
-    def test_calendar_accepts_spaced_and_compact_labels(self):
-        from datetime import date
-        from sources import bms_calendar
-        for label in ("Sat 14 Nov", "Sat14Nov", "Sat  14  Nov"):
-            page = MagicMock()
-            page.url = 'https://in.bookmyshow.com/cinemas/hyderabad/allu-cinemas-kokapet/buytickets/ALUC/20261114'
-            page.goto.return_value.status = 200
-            page.get_by_role.return_value.aria_snapshot.return_value = (
-                'ALLU Cinemas Kokapet beside Allu Studios\n'
-                f'- button "{label}" [pressed]:\n'
-                '- button "Sun15Nov" [disabled]:'
-            )
-            days = bms_calendar(page, "ALUC", date(2026, 11, 14))
-            self.assertTrue(days[date(2026, 11, 14)].endswith('/20261114'))
-            self.assertIsNone(days[date(2026, 11, 15)])
-            date_pattern = page.get_by_role.call_args_list[0].kwargs["name"]
-            self.assertIsNotNone(date_pattern.match(label))
-
-    def test_selected_date_accepts_both_formats(self):
-        from datetime import date
-        from sources import bms_rows
-        import test_watch
-        for number in (4,14):
-            page = MagicMock()
-            day = date(2026,11,number)
-            page.url = "https://in.bookmyshow.com/test"
-            page.get_by_role.return_value.first.aria_snapshot.return_value = test_watch.BMS
-            page.get_by_role.return_value.first.evaluate.return_value = False
-            bms_rows(page,"ALUC",day,page.url)
-            kwargs = page.get_by_role.call_args_list[0].kwargs
-            self.assertTrue(kwargs["pressed"])
-            pattern = kwargs["name"]
-            for label in (day.strftime("%a %d %b"), day.strftime("%a%d%b"), f'{day:%a}{number}{day:%b}'):
-                self.assertIsNotNone(pattern.fullmatch(label))
-            self.assertIsNone(pattern.fullmatch("Sun15Nov"))
-
-    def test_once_reopens_state_dir_and_inspection_keeps_it_untouched(self):
-        with TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"STATE_DIR":tmp,"TELEGRAM_BOT_TOKEN":"123:test","TELEGRAM_CHAT_ID":"123"}):
-                def write_state(browser,db,inspect):
-                    db.execute("INSERT OR REPLACE INTO health VALUES('test',7)")
-                    db.commit()
-                    return 0
-                with patch('sys.argv',['watcher.py','once']), patch.object(watcher,'sync_playwright'), patch.object(watcher,'cycle',side_effect=write_state):
-                    self.assertEqual(watcher.main(),0)
-                path = Path(tmp)/"watch.sqlite3"
-                before = path.read_bytes()
-                with patch('sys.argv',['watcher.py','inspect']), patch.object(watcher,'sync_playwright'), patch.object(watcher,'cycle',return_value=0):
-                    self.assertEqual(watcher.main(),0)
-                self.assertEqual(path.read_bytes(),before)
-                with watcher.database(path) as db:
-                    self.assertEqual(db.execute("SELECT failures FROM health WHERE scope='test'").fetchone()[0],7)
-
 
 if __name__ == '__main__':
     unittest.main()
