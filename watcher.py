@@ -13,7 +13,19 @@ from urllib.request import Request, urlopen
 
 from playwright.sync_api import sync_playwright
 
-from sources import AccessDenied, IST, VENUES, bms_calendar, bms_rows, district_calendar, district_directory, district_rows
+from sources import IST, VENUES, bms_calendar, bms_rows, district_calendar, district_directory, district_rows
+
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+window.chrome = { runtime: {} };
+Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+"""
+
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def log(message):
@@ -23,19 +35,17 @@ def log(message):
 def database(path):
     db = sqlite3.connect(path, timeout=20)
     db.executescript("""
-        CREATE TABLE IF NOT EXISTS sources (source TEXT PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS days (source TEXT, day TEXT, baseline INTEGER, PRIMARY KEY(source,day));
-        CREATE TABLE IF NOT EXISTS inventory (source TEXT, day TEXT, key TEXT, active INTEGER,
-            PRIMARY KEY(source,day,key));
-        CREATE TABLE IF NOT EXISTS events (key TEXT PRIMARY KEY, at TEXT, payload TEXT, status TEXT);
-        CREATE TABLE IF NOT EXISTS health (scope TEXT PRIMARY KEY, failures INTEGER);
+    CREATE TABLE IF NOT EXISTS sources (source TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS days (source TEXT, day TEXT, baseline INTEGER, PRIMARY KEY(source,day));
+    CREATE TABLE IF NOT EXISTS inventory (source TEXT, day TEXT, key TEXT, active INTEGER,
+        PRIMARY KEY(source,day,key));
+    CREATE TABLE IF NOT EXISTS events (key TEXT PRIMARY KEY, at TEXT, payload TEXT, status TEXT);
+    CREATE TABLE IF NOT EXISTS health (scope TEXT PRIMARY KEY, failures INTEGER);
     """)
     return db
 
 
 def calendar(db, source, dates):
-    # Dates already advertised on the first scan get a silent first inventory.
-    # A disabled date is known closed; enabling it later is an opening.
     with db:
         first = not db.execute("SELECT 1 FROM sources WHERE source=?", (source,)).fetchone()
         for day, url in dates.items():
@@ -54,8 +64,7 @@ def record(db, source, day, rows):
         explicitly_closed = set()
         db.execute("UPDATE inventory SET active=0 WHERE source=? AND day=?", (source, day))
         for r in rows:
-            # Include fundamental format and premium auditorium where reliably identified.
-            detail = (r["format"]+" "+r["screen"]).upper()
+            detail = (r["format"]+ " "+r["screen"]).upper()
             fmt = " ".join(re.findall(r"\b(?:2D|3D|IMAX|PCX|DOLBY CINEMA|4DX)\b",detail))
             fmt = " ".join(sorted(set(fmt.split())))
             key = "|".join([r["venue"],norm(r["film"]),norm(r["language"]),r["at"],fmt])
@@ -70,11 +79,11 @@ def record(db, source, day, rows):
                 payload = json.loads(old[0])
                 payload["links"][r["platform"]] = r["url"]
                 db.execute("UPDATE events SET payload=?, status=CASE WHEN status='closed' THEN 'pending' ELSE status END WHERE key=?",
-                           (json.dumps(payload),key))
+                    (json.dumps(payload),key))
             else:
                 payload = dict(r,links={r["platform"]:r["url"]})
                 db.execute("INSERT INTO events VALUES(?,?,?,?)",
-                           (key,r["at"],json.dumps(payload),"baseline" if baseline else "pending"))
+                    (key,r["at"],json.dumps(payload),"baseline" if baseline else "pending"))
         for key in explicitly_closed:
             if not db.execute("SELECT 1 FROM inventory WHERE key=? AND active=1",(key,)).fetchone():
                 db.execute("UPDATE events SET status='closed' WHERE key=? AND status='baseline'",(key,))
@@ -86,7 +95,7 @@ def telegram(method, data):
     if not re.fullmatch(r"\d+:[\w-]+",token):
         raise ValueError("Set TELEGRAM_BOT_TOKEN in .env")
     req = Request("https://api.telegram.org/bot"+token+"/"+method,
-                  data=json.dumps(data).encode(),headers={"Content-Type":"application/json"})
+        data=json.dumps(data).encode(),headers={"Content-Type":"application/json"})
     try:
         with urlopen(req,timeout=20) as response:
             answer = json.load(response)
@@ -150,10 +159,22 @@ def health(db,scope,errors,live):
 
 def cycle(browser,db,inspect=False):
     today = datetime.now(IST).date()
-    page = browser.new_page(timezone_id="Asia/Kolkata",locale="en-IN")
-    page.set_default_timeout(12000)
+    context = browser.new_context(
+        timezone_id="Asia/Kolkata",
+        locale="en-IN",
+        user_agent=USER_AGENT,
+        viewport={"width": 1366, "height": 900},
+        extra_http_headers={
+            "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
+            "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Linux"',
+        },
+    )
+    context.add_init_script(STEALTH_INIT_SCRIPT)
+    page = context.new_page()
+    page.set_default_timeout(15000)
     failures = 0
-    denied = {}
     try:
         try:
             district = district_directory(page)
@@ -166,13 +187,10 @@ def cycle(browser,db,inspect=False):
                 scope = platform+"/"+venue
                 errors = False
                 try:
-                    if platform in denied:
-                        raise AccessDenied(denied[platform])
                     if platform == "District":
                         if district is None:
                             raise ValueError("Directory check failed")
                         if venue not in district:
-                            # The directory is scoped to Hyderabad. Remember the prior observation.
                             if not inspect:
                                 calendar(db,scope,{})
                             health(db,scope,False,not inspect)
@@ -198,19 +216,14 @@ def cycle(browser,db,inspect=False):
                                 record(db,scope,day,rows)
                         except Exception as e:
                             errors = True
-                            log(f"{scope} {day}: unknown — "+str(e).splitlines()[0])
-                            if isinstance(e, AccessDenied):
-                                denied[platform] = str(e)
-                                break
+                            log(f"{scope} {day}: unknown - "+str(e).splitlines()[0])
                 except Exception as e:
                     errors = True
-                    if isinstance(e, AccessDenied):
-                        denied[platform] = str(e)
-                    log(f"{scope}: unknown — "+str(e).splitlines()[0])
+                    log(f"{scope}: unknown - "+str(e).splitlines()[0])
                 failures += int(errors)
                 health(db,scope,errors,not inspect)
     finally:
-        page.context.close()
+        context.close()
     if not inspect:
         deliver(db)
         with db:
@@ -221,24 +234,9 @@ def cycle(browser,db,inspect=False):
     return failures
 
 
-def browser_options():
-    options = {"headless": os.getenv("BROWSER_HEADLESS", "true").lower() != "false"}
-    if os.getenv("CHROMIUM_PATH"):
-        options["executable_path"] = os.environ["CHROMIUM_PATH"]
-    else:
-        # Use the full Chromium browser, including in headless mode.
-        options["channel"] = "chromium"
-    if os.getenv("BROWSER_PROXY_SERVER"):
-        options["proxy"] = {"server": os.environ["BROWSER_PROXY_SERVER"]}
-        for field in ("username", "password"):
-            if os.getenv("BROWSER_PROXY_" + field.upper()):
-                options["proxy"][field] = os.environ["BROWSER_PROXY_" + field.upper()]
-    return options
-
-
 def main():
     parser = argparse.ArgumentParser(description="Showtime Bell — Hyderabad cinema ticket alerts")
-    parser.add_argument("command",choices=["watch","once","inspect","test-alert","chat-id"])
+    parser.add_argument("command",choices=["watch","inspect","once","test-alert","chat-id"])
     mode = parser.parse_args().command
     if mode=="test-alert":
         send("Showtime Bell delivery test — Hyderabad cinema alerts are connected. This message contains no ticket opening.")
@@ -252,38 +250,41 @@ def main():
             print("Open your bot in Telegram, send /start, then retry.")
         return
     inspect = mode=="inspect"
-    if not inspect and not all(os.environ.get(k) for k in ("TELEGRAM_CHAT_ID","TELEGRAM_BOT_TOKEN")):
-        raise ValueError("Configure both Telegram settings before running watch")
-    interval = int(os.environ.get("POLL_SECONDS","300"))
-    if interval<=0:
-        raise ValueError("POLL_SECONDS must be positive")
-    path = Path(os.environ.get("STATE_DIR","data"))
-    if not inspect:
-        path.mkdir(parents=True,exist_ok=True)
-        import fcntl
-        lock = (path/"watch.lock").open("a")
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    db = database(":memory:" if inspect else path/"watch.sqlite3")
-    try:
-        with sync_playwright() as pw:
+    state_dir = Path(os.environ.get("STATE_DIR", "/data" if os.path.exists("/data") else "."))
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db_path = state_dir / "showtime.db"
+    db = database(db_path)
+
+    proxy_server = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    launch_kwargs = {
+        "headless": True,
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ],
+    }
+    if proxy_server:
+        launch_kwargs["proxy"] = {"server": proxy_server}
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(**launch_kwargs)
+        try:
+            if inspect:
+                failures = cycle(browser,db,inspect=True)
+                sys.exit(1 if failures else 0)
+            if mode=="once":
+                failures = cycle(browser,db,inspect=False)
+                sys.exit(1 if failures else 0)
+            log("Showtime Bell started. Press Ctrl+C to stop.")
             while True:
-                browser = pw.chromium.launch(**browser_options())
-                try:
-                    errors = cycle(browser,db,inspect)
-                finally:
-                    browser.close()
-                if inspect or mode == "once":
-                    return int(bool(errors))
-                time.sleep(interval)
-    finally:
-        db.close()
-        if not inspect:
-            lock.close()
+                start = time.time()
+                cycle(browser,db)
+                elapsed = time.time() - start
+                time.sleep(max(1.0, 180.0 - elapsed))
+        finally:
+            browser.close()
 
 
-if __name__=="__main__":
-    try:
-        sys.exit(main())
-    except Exception as e:
-        log(f"Stopped: {type(e).__name__}: "+str(e).splitlines()[0])
-        sys.exit(1)
+if __name__ == "__main__":
+    main()
