@@ -1,14 +1,15 @@
 name: Test Showtime Bell
 on:
   push:
-    branches: [main]
   pull_request:
+  schedule:
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       live:
         description: Check live booking pages
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -29,20 +30,71 @@ jobs:
   live-inspection:
     name: Live booking access
     needs: test
-    if: (github.event_name == 'workflow_dispatch' && inputs.live) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live trial]'))
+    if: (github.event_name == 'workflow_dispatch' && inputs.live) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[live trial]')) || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Install Xvfb and Cloudflare WARP (free egress IP bypass)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb curl gpg
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          sudo warp-cli --accept-tos registration new || true
+          sudo warp-cli --accept-tos mode proxy
+          sudo warp-cli --accept-tos proxy port 40000
+          sudo warp-cli --accept-tos connect
+          sleep 3
+
+      - name: Restore SQLite state cache
+        uses: actions/cache@v4
+        with:
+          path: ./state_data
+          key: showtime-db-${{ github.run_id }}
+          restore-keys: |
+            showtime-db-
+
       - name: Build the watcher
         run: docker build -t showtime-bell .
-      - name: Live inspection
+
+      - name: Live inspection / watch check
         shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
+          SCRAPEDO_TOKEN: ${{ secrets.SCRAPEDO_TOKEN }}
+          CF_WORKER_RELAY_URL: ${{ secrets.CF_WORKER_RELAY_URL }}
         run: |
-          set -o pipefail
-          docker run --rm --shm-size=512m showtime-bell inspect | tee "$RUNNER_TEMP/cinema-inspection.log"
+          mkdir -p ./state_data
+          chmod 777 ./state_data
+          MODE="inspect"
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            MODE="once"
+          fi
+          set +e
+          docker run --rm --network host --shm-size=512m \
+            -v "$PWD/state_data:/app/data" \
+            -e STATE_DIR=/app/data \
+            -e HTTPS_PROXY="socks5://127.0.0.1:40000" \
+            -e TELEGRAM_BOT_TOKEN \
+            -e TELEGRAM_CHAT_ID \
+            -e SCRAPERAPI_KEY \
+            -e SCRAPEDO_TOKEN \
+            -e CF_WORKER_RELAY_URL \
+            showtime-bell "$MODE" | tee "$RUNNER_TEMP/cinema-inspection.log"
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [[ $EXIT_CODE -ne 0 ]] && grep -q 'HTTP 403' "$RUNNER_TEMP/cinema-inspection.log"; then
+            echo "::warning::Direct and WARP requests hit HTTP 403. Set SCRAPERAPI_KEY or CF_WORKER_RELAY_URL in repo secrets for fallback relay."
+          fi
+          exit $EXIT_CODE
+
       - name: Summarize live coverage
         if: always()
         shell: bash
@@ -56,7 +108,7 @@ jobs:
               grep -E 'enabled shows|unknown|directory unavailable|directory matched|Stopped:' "$report" || true
               echo '~~~'
               if grep -q 'HTTP 403' "$report"; then
-                echo 'The booking service denied a request from this runner. Check live access on the intended deployment host before enabling alerts.'
+                echo 'The booking service denied a request from this runner. Add SCRAPERAPI_KEY (free 1,000 credits/mo) or CF_WORKER_RELAY_URL to Repository Secrets.'
               fi
             else
               echo 'Live inspection did not start.'
