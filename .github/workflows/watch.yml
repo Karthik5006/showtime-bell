@@ -40,12 +40,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install browser
+      - name: Install browser and Cloudflare WARP
         run: |
           python -m pip install playwright==1.62.0
           python -m playwright install --with-deps chromium
           sudo apt-get update -qq
-          sudo apt-get install -y xvfb xauth
+          sudo apt-get install -y xvfb xauth curl gpg
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq && sudo apt-get install -y cloudflare-warp
+          sudo warp-cli --accept-tos registration new || true
+          sudo warp-cli --accept-tos mode proxy
+          sudo warp-cli --accept-tos proxy port 40000
+          sudo warp-cli --accept-tos connect
+          sleep 3
       - name: Offline regression tests
         run: python -m unittest -v
       - name: Check notification settings
@@ -79,9 +87,13 @@ jobs:
           READY: ${{ steps.settings.outputs.ready }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BROWSER_PROXY_SERVER: ${{ secrets.BROWSER_PROXY_SERVER }}
+          BROWSER_PROXY_SERVER: ${{ secrets.BROWSER_PROXY_SERVER || 'socks5://127.0.0.1:40000' }}
           BROWSER_PROXY_USERNAME: ${{ secrets.BROWSER_PROXY_USERNAME }}
           BROWSER_PROXY_PASSWORD: ${{ secrets.BROWSER_PROXY_PASSWORD }}
+          HTTPS_PROXY: ${{ secrets.BROWSER_PROXY_SERVER || 'socks5://127.0.0.1:40000' }}
+          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
+          SCRAPEDO_TOKEN: ${{ secrets.SCRAPEDO_TOKEN }}
+          CF_WORKER_RELAY_URL: ${{ secrets.CF_WORKER_RELAY_URL }}
         shell: bash
         run: |
           mode=inspect
